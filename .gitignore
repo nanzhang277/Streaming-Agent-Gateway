@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/
+
+# 课程 PDF 不入库
+*.pdf
