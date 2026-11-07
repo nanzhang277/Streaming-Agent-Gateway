@@ -1,29 +1,29 @@
 # Streaming Agent Gateway
 
-课程《LLM Engineering · Module 1.3 Streaming》的实战项目(p45):把一次同步的模型调用,升级为**可观察、可停、可续、可审计**的 Agent 事件流。
+把一次同步的模型调用,升级为**可观察、可停、可续、可审计**的 Agent 事件流网关。
 
 - **可见** —— `text.delta` / `tool.started` / `run.retrying` 等语义事件实时推送,工具执行期不再是黑盒
 - **可停** —— `POST /runs/{id}/cancel` → `cancelling` 过渡态 → 协作式检查 → 宽限期后强制 `task.cancel()`,唯一终态 `run.cancelled`
-- **可续** —— SSE `Last-Event-ID` + Event Store 按 seq 重放;断线续传恢复的是 Harness Event,不是模型 Token,永不重跑/重复计费
-- **可审计** —— 每个事件带 `run_id + seq` 持久化在 Run Store;任意 run_id 可完整重放事实轨迹,TTFT/重试/工具状态/终态可查
+- **可续** —— SSE `Last-Event-ID` + Run Store 按 seq 重放;断线续传恢复的是业务事件,不是模型 Token,永不重跑/重复计费
+- **可审计** —— 每个事件带 `run_id + seq` 留档;任意 run_id 可完整重放事实轨迹,TTFT/重试/工具状态/终态可查
 
-## 架构(对应 PDF p13 六层栈)
+## 架构
 
 ```
 DeepSeek (ChatCompletionChunk)
   ↓
-Model Adapter        chunk → ModelStreamEvent,供应商协议止步于此(p12/18)
+Model Adapter        chunk → ModelStreamEvent,供应商协议止步于此
   ↓
-Agent Loop           生产业务事实(8 类事件),不懂 HTTP(p20/41)
+Agent Loop           生产业务事实(8 类事件),不懂 HTTP
   ↓
-Run Store (内存)     单一终态守卫、seq 分配、事件留档;接口可换 PostgreSQL+Redis(p19/37)
+Run Store (内存)     单一终态守卫、seq 分配、事件留档;接口可换 PostgreSQL+Redis
   ↓
-SSE Gateway          编码 / 心跳 / Last-Event-ID 重放(p36)
+SSE Gateway          编码 / 心跳 / Last-Event-ID 重放
   ↓
 Client               Web 测试台(EventSource)/ CLI(httpx),只解析 RunEvent
 ```
 
-REST 三接口分离(p11/p21):`POST /runs` 创建(202 立即返回 run_id)· `GET /runs/{id}/events` 订阅 · `POST /runs/{id}/cancel` 控制。**断开订阅 ≠ 取消任务**。
+REST 三接口分离:`POST /runs` 创建(202 立即返回 run_id)· `GET /runs/{id}/events` 订阅 · `POST /runs/{id}/cancel` 控制。**断开订阅 ≠ 取消任务**。
 
 ## 快速开始
 
@@ -40,7 +40,7 @@ python clients/cli.py "用 list_dir 看看当前目录,然后总结"
 python clients/cli.py --run-id <id>     # 重放历史 Run(审计)
 ```
 
-> 模型名默认用讲义中的 `deepseek-v4-flash`;若你的账号没有该型号,在 `.env` 中把 `DEEPSEEK_MODEL` 改为 `deepseek-chat`。
+> 默认模型为 `deepseek-v4-flash`;若你的账号没有该型号,在 `.env` 中把 `DEEPSEEK_MODEL` 改为 `deepseek-chat`。
 
 ## 前端测试台:四个能力怎么测
 
@@ -80,9 +80,9 @@ SSE 帧:`id:` = seq(浏览器重连自动回传 Last-Event-ID),`event:` = 类型
 
 ## 工具
 
-内置两个只读工具 `list_dir` / `read_file`,路径锁死在 `TOOL_ROOT` 内(演示 p30 中"只读可重试"档)。接 shell 等中等代价工具时,必须补进程句柄 + SIGTERM 的取消语义。
+内置两个只读工具 `list_dir` / `read_file`,路径锁死在 `TOOL_ROOT` 内,用于演示 tool 事件的成对产生与工具失败不拖垮 Run 的语义。接 shell 等有副作用的工具时,必须补进程句柄 + SIGTERM 的取消语义,不可逆操作需幂等 key + 状态查询。
 
-## 实现顺序(对应 PDF 11 步)
+## 实现顺序
 
 RunEvent 协议 → SSE 编解码 → StreamingModel Protocol → DeepSeek Adapter(含 tool_calls 分片聚合)→ Run Store → Agent Loop(重试边界/取消检查)→ 三接口 → Web/CLI 客户端 → 异常测试 → 存档 → TTFT 统计。
 
@@ -97,6 +97,6 @@ python -m pytest -q        # 27 项:SSE 矩阵 / Store / Adapter 边界 / 端到
 
 ## 边界说明(v1 未含,接口已预留)
 
-- **持久化**:Run Store 为内存实现;替换 PostgreSQL(`UNIQUE(run_id, seq)`)+ Redis 通知时方法签名不变 —— 但进程重启后内存事实丢失,checkpoint 跨进程恢复(p38/39)需先落库。
-- **Checkpoint 恢复**:取消/失败时已保存存档(部分文本、last_seq、工具状态,即 p32 的字段),但"从 checkpoint 继续跑"尚未实现。
-- **重试**:自动重试仅限"尚未产生业务事件"的 429/5xx/网络错误;流中断后按讲义要求走重放而非重新生成。
+- **持久化**:Run Store 为内存实现;替换 PostgreSQL(`UNIQUE(run_id, seq)`)+ Redis 通知时方法签名不变 —— 但进程重启后内存事实丢失,跨进程恢复需先落库。
+- **Checkpoint 恢复**:取消/失败时已保存存档(部分文本、last_seq、工具状态),但"从 checkpoint 继续跑"尚未实现。
+- **重试**:自动重试仅限"尚未产生业务事件"的 429/5xx/网络错误;流中断后走事件重放而非重新生成,避免产生第二份互相矛盾的输出。
